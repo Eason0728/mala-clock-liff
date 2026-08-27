@@ -37,6 +37,11 @@
   #log{font-size:12px; max-height:200px; overflow-y:auto; background:#161616; border-radius:10px; padding:10px; margin-top:8px}
   #log div{padding:2px 0; border-bottom:1px solid rgba(255,255,255,.04); font-variant-numeric:tabular-nums}
   .verdict{font-size:16px; font-weight:700; text-align:center; padding:14px; border-radius:12px; margin-top:8px}
+  input[type=text]{
+    width:100%; font:inherit; background:#161616; color:var(--ink);
+    border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:4px;
+  }
+  input[type=text]:focus{outline:2px solid var(--gold); outline-offset:1px}
   textarea{width:100%; height:150px; background:#161616; color:var(--ink); border:1px solid var(--line);
            border-radius:10px; padding:10px; font:12px/1.5 ui-monospace,monospace; margin-top:8px}
 </style>
@@ -70,9 +75,16 @@
 
 <div class="card">
   <h2>④ 距離測試</h2>
-  <div class="sub" style="margin:0 0 8px">站在店門口按「設為基準點」，再走到店內各角落看距離變化。</div>
-  <div id="dist"><div class="row"><span class="k">基準點</span><span class="v">未設定</span></div></div>
-  <button id="btnBase" class="ghost">把目前位置設為基準點</button>
+  <div class="sub" style="margin:0 0 8px">
+    建議用 <b>Google 地圖查到的店門口座標</b>當基準點——比現場定位準，量出來才是真實距離。
+  </div>
+  <input id="coordInput" type="text" inputmode="text" placeholder="24.801234, 120.971234">
+  <div class="sub" style="margin:6px 0 0; font-size:12px">
+    可直接貼：座標、Google 地圖網址、或 24°48'04.4"N 120°58'16.4"E
+  </div>
+  <button id="btnCoord">用這組座標當基準點</button>
+  <div id="dist" style="margin-top:12px"><div class="row"><span class="k">基準點</span><span class="v">未設定</span></div></div>
+  <button id="btnBase" class="ghost">改用目前位置當基準點</button>
 </div>
 
 <div class="card">
@@ -191,10 +203,13 @@ function showGeo(s){
 
 function showDist(s){
   if(!base){ el('dist').innerHTML = row('基準點','未設定'); return }
+  var head = row('基準點', (base.src||'現場定位') + (base.acc ? '（±'+base.acc+'m）' : '（無誤差）'),
+                 base.acc ? 'warn' : 'ok') +
+             row('基準座標', base.lat.toFixed(6)+', '+base.lng.toFixed(6));
+  if(!s){ el('dist').innerHTML = head + row('距離','等待定位…'); return }
   var d = haversine(base.lat, base.lng, s.lat, s.lng);
   var eff = Math.max(0, d - Math.min(s.acc, ACC_MAX));   // 正式系統的誤差折扣算法
-  el('dist').innerHTML =
-    row('基準點','已設定（±'+base.acc+'m）') +
+  el('dist').innerHTML = head +
     row('實際距離', Math.round(d)+' 公尺') +
     row('折扣後距離', Math.round(eff)+' 公尺') +
     row('半徑 '+RADIUS+'m 判定', eff<=RADIUS ? '✓ 可打卡' : '✗ 會被擋', eff<=RADIUS?'ok':'bad');
@@ -243,12 +258,51 @@ function toggleWatch(){
   setTimeout(function(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; btn.textContent='連續取樣 20 秒' } }, 20000);
 }
 
+function saveBase(){
+  try{ sessionStorage.setItem('liffspike_base', JSON.stringify(base)) }catch(e){}
+  if(samples.length) showDist(samples[samples.length-1]); else showDist(null);
+}
+
 function setBase(){
   if(!samples.length){ alert('請先取得一次位置'); return }
   var s = samples[samples.length-1];
-  base = { lat:s.lat, lng:s.lng, acc:s.acc };
-  try{ sessionStorage.setItem('liffspike_base', JSON.stringify(base)) }catch(e){}
-  showDist(s);
+  base = { lat:s.lat, lng:s.lng, acc:s.acc, src:'現場定位' };
+  saveBase();
+}
+
+/* 支援三種貼法：純座標對、Google 地圖網址(@lat,lng)、度分秒 */
+function parseCoord(str){
+  if(!str) return null;
+  var s = String(str).trim();
+  var m = s.match(/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);          // 地圖網址
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  m = s.match(/[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);          // ?q=lat,lng
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  m = s.match(/(\d+)[°\s]+(\d+)['\u2032\s]+([\d.]+)["\u2033]?\s*([NSns])[,\s]+(\d+)[°\s]+(\d+)['\u2032\s]+([\d.]+)["\u2033]?\s*([EWew])/);
+  if(m){                                                                     // 度分秒
+    var la = (+m[1]) + (+m[2])/60 + (+m[3])/3600; if(/[Ss]/.test(m[4])) la = -la;
+    var lo = (+m[5]) + (+m[6])/60 + (+m[7])/3600; if(/[Ww]/.test(m[8])) lo = -lo;
+    return { lat:la, lng:lo };
+  }
+  m = s.match(/(-?\d+\.\d+)\s*[,\s]\s*(-?\d+\.\d+)/);                 // 純座標對
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  return null;
+}
+
+function setBaseManual(){
+  var c = parseCoord(el('coordInput').value);
+  if(!c){
+    alert('看不懂這組座標。\n\n可以貼：\n24.801234, 120.971234\n或 Google 地圖分享的網址');
+    return;
+  }
+  /* 台灣範圍防呆——最常見的錯是經緯度貼反 */
+  if(c.lat < 21 || c.lat > 26.5 || c.lng < 118 || c.lng > 122.5){
+    if(!confirm('這組座標不在台灣範圍內：\n緯度 ' + c.lat + '\n經度 ' + c.lng +
+                '\n\n是不是經緯度貼反了？\n仍要使用請按「確定」。')) return;
+  }
+  base = { lat:c.lat, lng:c.lng, acc:0, src:'Google 座標' };
+  saveBase();
+  el('coordInput').value = c.lat.toFixed(6) + ', ' + c.lng.toFixed(6);
 }
 
 function haversine(la1,lo1,la2,lo2){
@@ -276,6 +330,7 @@ function makeReport(){
   } else { L.push('精準度：未取得'); }
   if(base && samples.length){
     var s=samples[samples.length-1], d=haversine(base.lat,base.lng,s.lat,s.lng);
+    L.push('基準點來源：'+(base.src||'現場定位')+'  '+base.lat.toFixed(6)+','+base.lng.toFixed(6));
     L.push('距基準點：'+Math.round(d)+' m（折扣後 '+Math.round(Math.max(0,d-Math.min(s.acc,ACC_MAX)))+' m）');
   }
   L.push('—— 逐筆 ——');
@@ -287,9 +342,15 @@ function makeReport(){
 el('btnOnce').onclick   = getOnce;
 el('btnWatch').onclick  = toggleWatch;
 el('btnBase').onclick   = setBase;
+el('btnCoord').onclick  = setBaseManual;
+el('coordInput').addEventListener('keydown', function(e){ if(e.key==='Enter') setBaseManual() });
 el('btnReport').onclick = makeReport;
 
-try{ var b=sessionStorage.getItem('liffspike_base'); if(b) base=JSON.parse(b) }catch(e){}
+try{
+  var b = sessionStorage.getItem('liffspike_base');
+  if(b){ base = JSON.parse(b); if(!base.src) base.src='現場定位'; showDist(null);
+         el('coordInput').value = base.lat.toFixed(6)+', '+base.lng.toFixed(6); }
+}catch(e){}
 showEnv();
 initLiff();
 </script>
